@@ -182,30 +182,63 @@ pub fn resolve_aws_credentials(
     )
 }
 
-pub fn find_aws_cli() -> String {
-    for candidate in ["aws", "/opt/homebrew/bin/aws", "/usr/local/bin/aws"] {
-        if Command::new(candidate)
-            .arg("--version")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-        {
-            return candidate.into();
-        }
-    }
-    "aws".into()
-}
+const AWS_CLI_CANDIDATES: &[&str] = &[
+    "aws",
+    "/opt/homebrew/bin/aws",
+    "/usr/local/bin/aws",
+    "/usr/local/aws-cli/v2/current/bin/aws",
+];
 
-pub fn aws_cli_available() -> bool {
-    Command::new(find_aws_cli())
+fn aws_binary_works(path: &str) -> bool {
+    Command::new(path)
         .arg("--version")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
 }
 
-pub fn build_aws_command(creds: &ResolvedAwsCredentials) -> Command {
-    let mut cmd = Command::new(find_aws_cli());
+#[cfg(target_os = "macos")]
+fn shell_which_aws() -> Option<String> {
+    let output = Command::new("zsh")
+        .args(["-ilc", "command -v aws"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() || !aws_binary_works(&path) {
+        None
+    } else {
+        Some(path)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn shell_which_aws() -> Option<String> {
+    None
+}
+
+pub fn aws_cli_missing_message() -> String {
+    "AWS CLI not installed — run: brew install awscli".into()
+}
+
+pub fn find_aws_cli() -> Option<String> {
+    for candidate in AWS_CLI_CANDIDATES {
+        if aws_binary_works(candidate) {
+            return Some((*candidate).into());
+        }
+    }
+    shell_which_aws()
+}
+
+pub fn aws_cli_available() -> bool {
+    find_aws_cli().is_some()
+}
+
+pub fn build_aws_command(creds: &ResolvedAwsCredentials) -> Result<Command, String> {
+    let aws = find_aws_cli().ok_or_else(|| aws_cli_missing_message())?;
+    let mut cmd = Command::new(aws);
     cmd.env("AWS_ACCESS_KEY_ID", &creds.access_key_id);
     cmd.env("AWS_SECRET_ACCESS_KEY", &creds.secret_access_key);
     cmd.env("AWS_REGION", &creds.region);
@@ -225,11 +258,11 @@ pub fn build_aws_command(creds: &ResolvedAwsCredentials) -> Command {
         cmd.env_remove("AWS_PROFILE");
     }
 
-    cmd
+    Ok(cmd)
 }
 
 pub fn validate_aws_credentials(creds: &ResolvedAwsCredentials) -> Result<String, String> {
-    let output = build_aws_command(creds)
+    let output = build_aws_command(creds)?
         .args(["sts", "get-caller-identity", "--output", "json"])
         .output()
         .map_err(|e| format!("Failed to run AWS CLI: {e}"))?;
@@ -246,7 +279,9 @@ pub fn validate_aws_credentials(creds: &ResolvedAwsCredentials) -> Result<String
 }
 
 pub fn widget_aws_sync_hint(message: &str) -> String {
-    if message.contains("SignatureDoesNotMatch") {
+    if message.contains("No such file or directory") || message.contains("AWS CLI not installed") {
+        "Install AWS CLI: brew install awscli · then Sync Now".to_string()
+    } else if message.contains("SignatureDoesNotMatch") {
         "AWS secret key mismatch · re-save keys in API Keys".to_string()
     } else if message.contains("Unable to locate credentials") || message.contains("No credentials") {
         "AWS not configured · API Keys or run aws configure".to_string()
@@ -308,17 +343,14 @@ pub fn fetch_bedrock_cost_events(
     days: i64,
 ) -> Result<Vec<BedrockCostDay>, String> {
     if !aws_cli_available() {
-        return Err(
-            "AWS CLI not found. Install it with `brew install awscli` to sync Bedrock costs."
-                .into(),
-        );
+        return Err(aws_cli_missing_message());
     }
 
     let end = chrono::Utc::now().date_naive();
     let start = end - chrono::Duration::days(days);
     let filter = r#"{"Dimensions":{"Key":"SERVICE","Values":["Amazon Bedrock"]}}"#;
 
-    let output = build_aws_command(creds)
+    let output = build_aws_command(creds)?
         .args([
             "ce",
             "get-cost-and-usage",
