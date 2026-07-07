@@ -246,22 +246,105 @@ check_node() {
   return 1
 }
 
+load_cargo_env() {
+  if [[ -f "${HOME}/.cargo/env" ]]; then
+    # shellcheck disable=SC1091
+    source "${HOME}/.cargo/env"
+    return 0
+  fi
+  return 1
+}
+
+rustup_target_triple() {
+  case "$(uname -m)" in
+    arm64|aarch64) echo "aarch64-apple-darwin" ;;
+    x86_64) echo "x86_64-apple-darwin" ;;
+    *) echo "aarch64-apple-darwin" ;;
+  esac
+}
+
+install_rust_via_rustup() {
+  local triple tmp installer rc=1
+  triple="$(rustup_target_triple)"
+  tmp="$(mktemp)"
+
+  info "Trying rustup (direct binary for ${triple})…"
+  if curl --proto '=https' --tlsv1.2 -fsSL \
+    -o "$tmp" "https://static.rust-lang.org/rustup/dist/${triple}/rustup-init" 2>/dev/null; then
+    chmod +x "$tmp"
+    if "$tmp" -y --no-modify-path; then
+      rc=0
+    fi
+    rm -f "$tmp"
+    if (( rc == 0 )); then
+      load_cargo_env || true
+      command_exists cargo && return 0
+    fi
+  fi
+  rm -f "$tmp"
+
+  info "Trying rustup installer script (sh.rustup.rs)…"
+  if curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o "$tmp" 2>/dev/null; then
+    if sh "$tmp" -y; then
+      rc=0
+    fi
+    rm -f "$tmp"
+    if (( rc == 0 )); then
+      load_cargo_env || true
+      command_exists cargo && return 0
+    fi
+  fi
+  rm -f "$tmp"
+
+  return 1
+}
+
+install_rust_via_brew() {
+  command_exists brew || return 1
+  info "Installing Rust via Homebrew…"
+  brew install rust && command_exists cargo
+}
+
 check_rust() {
   if command_exists cargo && command_exists rustc; then
     pass "Rust $(rustc --version | awk '{print $2}')"
     return 0
   fi
+
+  load_cargo_env || true
+  if command_exists cargo && command_exists rustc; then
+    pass "Rust $(rustc --version | awk '{print $2}') (from ~/.cargo/env)"
+    return 0
+  fi
+
   fail "Rust/Cargo not found (required for Tauri)"
+
+  if command_exists brew; then
+    echo -en "${YELLOW}?${NC} Install Rust via Homebrew (recommended on corporate networks)? [Y/n] "
+    read -r answer
+    if [[ ! "$answer" =~ ^[Nn]$ ]]; then
+      if install_rust_via_brew; then
+        pass "Rust installed via Homebrew"
+        return 0
+      fi
+      warn "Homebrew Rust install failed"
+    fi
+  fi
+
   echo -en "${YELLOW}?${NC} Install Rust via rustup? [y/N] "
   read -r answer
   if [[ "$answer" =~ ^[Yy]$ ]]; then
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-    # shellcheck disable=SC1091
-    source "${HOME}/.cargo/env"
-    pass "Rust installed"
-    return 0
+    if install_rust_via_rustup; then
+      pass "Rust installed via rustup"
+      return 0
+    fi
+    fail "rustup install failed (HTTP 403/network block is common on corporate Wi‑Fi)"
+    info "Try manually: brew install rust"
+    info "Or download from https://rustup.rs/ in a browser, then re-run ./setup.sh"
+    return 1
   fi
-  info "Install from https://rustup.rs/"
+
+  info "Install Rust with: brew install rust   OR   https://rustup.rs/"
   return 1
 }
 
