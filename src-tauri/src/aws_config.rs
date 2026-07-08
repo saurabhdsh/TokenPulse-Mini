@@ -253,13 +253,8 @@ pub fn build_aws_command(creds: &ResolvedAwsCredentials) -> Result<Command, Stri
         cmd.env_remove("AWS_SESSION_TOKEN");
     }
 
-    if creds.source == "cli" || creds.source == "env" {
-        if let Some(profile) = &creds.profile {
-            cmd.env("AWS_PROFILE", profile);
-        }
-    } else {
-        cmd.env_remove("AWS_PROFILE");
-    }
+    // Explicit keys are always set above — profile would override the chain (SSO, etc.)
+    cmd.env_remove("AWS_PROFILE");
 
     Ok(cmd)
 }
@@ -310,36 +305,45 @@ pub fn widget_sync_hint(provider: &str, message: &str) -> String {
 
 #[derive(Debug, Deserialize)]
 struct CallerIdentity {
+    #[serde(rename = "Arn")]
     arn: String,
+    #[serde(rename = "Account")]
     account: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct CostExplorerResponse {
-    #[serde(default)]
+    #[serde(rename = "ResultsByTime", default)]
     results_by_time: Vec<CostResultByTime>,
 }
 
 #[derive(Debug, Deserialize)]
 struct CostResultByTime {
+    #[serde(rename = "TimePeriod")]
     time_period: TimePeriod,
+    #[serde(rename = "Groups")]
     groups: Option<Vec<CostGroup>>,
+    #[serde(rename = "Total")]
     total: Option<HashMap<String, CostMetric>>,
 }
 
 #[derive(Debug, Deserialize)]
 struct TimePeriod {
+    #[serde(rename = "Start")]
     start: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct CostGroup {
+    #[serde(rename = "Keys")]
     keys: Vec<String>,
+    #[serde(rename = "Metrics")]
     metrics: HashMap<String, CostMetric>,
 }
 
 #[derive(Debug, Deserialize)]
 struct CostMetric {
+    #[serde(rename = "Amount")]
     amount: String,
 }
 

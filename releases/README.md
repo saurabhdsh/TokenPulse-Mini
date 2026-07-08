@@ -6,7 +6,12 @@ Pre-built installers so you **don't need Rust or Node** on the target Mac.
 
 | Platform | File | Notes |
 |----------|------|--------|
-| Apple Silicon (M1/M2/M3/M4) | [TokenPulse-Mini_0.1.2_aarch64.dmg](./TokenPulse-Mini_0.1.2_aarch64.dmg) | macOS 11+ · **v0.1.2** — performance, Azure OpenAI, timezone fix |
+| Apple Silicon (M1/M2/M3/M4) | [TokenPulse-Mini_0.1.3_aarch64.dmg](./TokenPulse-Mini_0.1.3_aarch64.dmg) | macOS 11+ · **v0.1.3** — AWS Bedrock STS/Cost Explorer fix |
+
+### v0.1.3
+- Fix AWS Bedrock sync: parse STS `get-caller-identity` JSON (`Arn`/`Account` PascalCase)
+- Fix Cost Explorer response parsing for Bedrock cost sync
+- Stop setting `AWS_PROFILE` when explicit access keys are already passed to AWS CLI
 
 ### v0.1.2
 - Performance: async sync, faster widget/menu navigation, expand/collapse fixes

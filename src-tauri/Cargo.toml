@@ -1,6 +1,6 @@
 [package]
 name = "tokenpulse-mini"
-version = "0.1.2"
+version = "0.1.3"
 description = "TokenPulse Mini - AI API usage tracker"
 authors = ["TokenPulse"]
 edition = "2021"
