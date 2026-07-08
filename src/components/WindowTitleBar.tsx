@@ -1,4 +1,3 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useWindowDrag } from "../hooks/useWindowDrag";
 
 interface WindowTitleBarProps {
@@ -7,6 +6,7 @@ interface WindowTitleBarProps {
   pinned: boolean;
   onTogglePin: () => void;
   onCollapse: () => void;
+  onHide: () => void;
 }
 
 const dragRegion = { "data-tauri-drag-region": true } as const;
@@ -17,6 +17,7 @@ export function WindowTitleBar({
   pinned,
   onTogglePin,
   onCollapse,
+  onHide,
 }: WindowTitleBarProps) {
   const onDragMouseDown = useWindowDrag();
 
@@ -43,7 +44,7 @@ export function WindowTitleBar({
         <TitleBarButton title="Collapse to widget" onClick={onCollapse}>
           ⊟
         </TitleBarButton>
-        <TitleBarButton title="Hide" onClick={() => getCurrentWindow().hide()}>
+        <TitleBarButton title="Hide" onClick={onHide}>
           −
         </TitleBarButton>
       </div>

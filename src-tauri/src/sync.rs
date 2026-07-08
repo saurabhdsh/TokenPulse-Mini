@@ -1,8 +1,9 @@
 use crate::adapters::fetch_credit_balance;
 use crate::adapters::usage_admin_key_required_message;
-use crate::adapters::{BedrockAdapter, OpenAIAdapter};
-use crate::credentials::{resolve_bedrock_credentials, resolve_openai_credentials};
+use crate::adapters::{AzureOpenAIAdapter, BedrockAdapter, OpenAIAdapter};
+use crate::credentials::{resolve_azure_credentials, resolve_bedrock_credentials, resolve_openai_credentials};
 use crate::db::Database;
+use crate::engine::AlertEngine;
 use crate::env;
 use crate::models::UsageEvent;
 use chrono::Utc;
@@ -40,6 +41,31 @@ pub fn apply_env_keys(db: &Database) -> Result<Vec<String>, String> {
     }
     if crate::aws_config::credentials_file_exists() {
         applied.push("AWS_CLI_PROFILE".into());
+    }
+
+    if let Some(key) = crate::azure_config::get_api_key() {
+        let existing = db
+            .get_provider_by_name("Azure OpenAI")
+            .map_err(|e| e.to_string())?;
+        let app_saved = existing
+            .key_source
+            .as_deref()
+            .is_some_and(|s| s == "app" || s == "manual")
+            && existing
+                .api_key
+                .as_ref()
+                .map(|k| !k.is_empty())
+                .unwrap_or(false);
+
+        if !app_saved {
+            db.set_provider_key("Azure OpenAI", &key, true, "env")
+                .map_err(|e| e.to_string())?;
+            applied.push("AZURE_OPENAI_API_KEY".into());
+        }
+    }
+
+    if crate::azure_config::get_endpoint().is_some() {
+        applied.push("AZURE_OPENAI_ENDPOINT".into());
     }
 
     Ok(applied)
@@ -86,6 +112,25 @@ pub fn sync_all_providers(db: &Database) -> Result<Vec<SyncReport>, String> {
                     .map_err(|e| e.to_string())?;
                     reports.push(SyncReport {
                         provider: "AWS Bedrock".into(),
+                        events_synced: 0,
+                        status: "error".into(),
+                        message: err,
+                    });
+                }
+            }
+        } else if provider.name == "Azure OpenAI" {
+            match sync_azure(db, &provider) {
+                Ok(report) => reports.push(report),
+                Err(err) => {
+                    db.set_provider_sync_status(
+                        "Azure OpenAI",
+                        "error",
+                        &err,
+                        Some(Utc::now().to_rfc3339()),
+                    )
+                    .map_err(|e| e.to_string())?;
+                    reports.push(SyncReport {
+                        provider: "Azure OpenAI".into(),
                         events_synced: 0,
                         status: "error".into(),
                         message: err,
@@ -220,6 +265,60 @@ fn sync_bedrock(db: &Database) -> Result<SyncReport, String> {
     })
 }
 
+fn sync_azure(
+    db: &Database,
+    provider: &crate::models::Provider,
+) -> Result<SyncReport, String> {
+    let creds = resolve_azure_credentials(db)?;
+    let adapter = AzureOpenAIAdapter;
+    let events = adapter
+        .fetch_usage_with_creds(&creds)
+        .map_err(|e| e.to_string())?;
+
+    if provider.api_key.as_deref().unwrap_or("").is_empty() {
+        let source = if crate::azure_config::get_api_key().is_some() {
+            "env"
+        } else {
+            "app"
+        };
+        db.set_provider_key("Azure OpenAI", &creds.api_key, true, source)
+            .map_err(|e| e.to_string())?;
+    }
+
+    let pricing_map = db
+        .get_azure_pricing_map()
+        .map_err(|e| e.to_string())?;
+    let events = apply_db_pricing(events, &pricing_map);
+
+    db.replace_provider_events("Azure OpenAI", &events)
+        .map_err(|e| e.to_string())?;
+
+    db.purge_non_live_events().map_err(|e| e.to_string())?;
+
+    let identity = crate::azure_config::validate_azure_openai_credentials(&creds)?;
+    let metrics_note = if crate::azure_config::az_cli_available() {
+        " · Azure CLI detected"
+    } else {
+        " · install Azure CLI + `az login` for token metrics"
+    };
+    let message = format!(
+        "Synced {} Azure OpenAI usage bucket(s) · {}{}",
+        events.len(),
+        identity,
+        metrics_note
+    );
+    let synced_at = Utc::now().to_rfc3339();
+    db.set_provider_sync_status("Azure OpenAI", "connected", &message, Some(synced_at))
+        .map_err(|e| e.to_string())?;
+
+    Ok(SyncReport {
+        provider: "Azure OpenAI".into(),
+        events_synced: events.len() as i64,
+        status: "connected".into(),
+        message,
+    })
+}
+
 fn apply_db_pricing(
     events: Vec<UsageEvent>,
     pricing: &std::collections::HashMap<String, (f64, f64)>,
@@ -243,4 +342,12 @@ fn apply_db_pricing(
             event
         })
         .collect()
+}
+
+/// Full live refresh: env import, provider sync, alert evaluation.
+pub fn refresh_live_data_inner(db: &Database) -> Result<Vec<SyncReport>, String> {
+    apply_env_keys(db)?;
+    let reports = sync_all_providers(db)?;
+    let _ = AlertEngine::evaluate(db);
+    Ok(reports)
 }

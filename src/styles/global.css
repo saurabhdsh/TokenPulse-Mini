@@ -264,3 +264,31 @@ select {
   background: rgba(10, 11, 15, 0.5);
 }
 
+.btn-sync {
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  align-self: flex-start;
+  background: rgba(108, 140, 255, 0.15);
+  border: 1px solid rgba(108, 140, 255, 0.35);
+  color: var(--accent);
+  cursor: pointer;
+  transition: background 0.12s, transform 0.08s, border-color 0.12s;
+}
+
+.btn-sync:hover:not(:disabled) {
+  background: rgba(108, 140, 255, 0.22);
+}
+
+.btn-sync:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.btn-sync.active,
+.btn-sync:disabled {
+  background: rgba(108, 140, 255, 0.28);
+  cursor: wait;
+  transform: scale(0.98);
+}
+

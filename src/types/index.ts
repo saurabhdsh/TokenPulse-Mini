@@ -81,6 +81,12 @@ export interface SyncReport {
   message: string;
 }
 
+export interface LiveSyncFinished {
+  ok: boolean;
+  reports: SyncReport[];
+  error: string | null;
+}
+
 export interface EnvVarProbe {
   process: boolean;
   launchctl: boolean;
@@ -101,6 +107,13 @@ export interface EnvDetection {
   aws_profile: boolean;
   aws_cli_configured: boolean;
   aws_cli_available: boolean;
+  azure_openai_api_key: boolean;
+  azure_openai_endpoint: boolean;
+  azure_openai_api_version: boolean;
+  azure_openai_deployment: boolean;
+  azure_subscription_id: boolean;
+  azure_resource_group: boolean;
+  azure_cli_available: boolean;
   applied_keys: string[];
 }
 
@@ -112,6 +125,16 @@ export interface AwsCredentialsStatus {
   profile: CredentialFieldStatus;
   aws_cli_configured: boolean;
   aws_cli_available: boolean;
+}
+
+export interface AzureCredentialsStatus {
+  api_key: CredentialFieldStatus;
+  endpoint: CredentialFieldStatus;
+  api_version: CredentialFieldStatus;
+  deployment_name: CredentialFieldStatus;
+  subscription_id: CredentialFieldStatus;
+  resource_group: CredentialFieldStatus;
+  azure_cli_available: boolean;
 }
 
 export interface CredentialFieldStatus {
@@ -237,6 +260,15 @@ export interface UpdateAwsCredentialsPayload {
   session_token?: string | null;
   region?: string | null;
   profile?: string | null;
+}
+
+export interface UpdateAzureCredentialsPayload {
+  api_key?: string | null;
+  endpoint?: string | null;
+  api_version?: string | null;
+  deployment_name?: string | null;
+  subscription_id?: string | null;
+  resource_group?: string | null;
 }
 
 export type ViewMode = "widget" | "expanded";

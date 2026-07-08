@@ -13,8 +13,13 @@ dist-ssr
 *.local
 
 # Local credentials (created by setup.sh)
+.env
 .env.credentials
 .config/tokenpulse-mini/
+
+# Python
+__pycache__/
+*.pyc
 
 # Editor directories and files
 .vscode/*

@@ -319,7 +319,7 @@ fn fetch_all_buckets(
 fn bucket_timestamp(start_time: i64) -> String {
     DateTime::<Utc>::from_timestamp(start_time, 0)
         .unwrap_or_else(Utc::now)
-        .to_rfc3339()
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 fn normalize_model_name(model: &str) -> String {

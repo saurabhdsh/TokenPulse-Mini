@@ -1,25 +1,21 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, formatCost, formatTime, PROVIDER_COLORS } from "../lib/api";
-import type { SyncReport, UsageEvent } from "../types";
+import { useLiveSync } from "../hooks/useLiveSync";
+import type { UsageEvent } from "../types";
 
 export function UsageHistoryPage() {
   const [events, setEvents] = useState<UsageEvent[]>([]);
-  const [syncing, setSyncing] = useState(false);
-  const [lastSync, setLastSync] = useState<SyncReport[]>([]);
 
-  const load = () => api.getUsageHistory(100, 0).then(setEvents).catch(console.error);
+  const load = useCallback(() => {
+    return api.getUsageHistory(100, 0).then(setEvents).catch(console.error);
+  }, []);
 
-  useEffect(() => { load(); }, []);
+  const { syncing, startSync, lastReports } = useLiveSync(load);
 
-  const sync = async () => {
-    setSyncing(true);
-    try {
-      const reports = await api.refreshLiveData();
-      setLastSync(reports);
-      await load();
-    } finally {
-      setSyncing(false);
-    }
+  useEffect(() => { load(); }, [load]);
+
+  const sync = () => {
+    void startSync();
   };
 
   return (
@@ -31,18 +27,19 @@ export function UsageHistoryPage() {
             {events.length} recent events
           </p>
         </div>
-        <button onClick={sync} disabled={syncing} style={{
-          padding: "10px 16px", borderRadius: 10, fontSize: 12, fontWeight: 600,
-          background: "rgba(108,140,255,0.15)", border: "1px solid rgba(108,140,255,0.25)",
-          color: "var(--accent)", opacity: syncing ? 0.6 : 1,
-        }}>
-          {syncing ? "Syncing…" : "↻ Sync Live Data"}
+        <button
+          type="button"
+          onClick={sync}
+          disabled={syncing}
+          className={syncing ? "btn-sync active" : "btn-sync"}
+        >
+          {syncing ? "⟳ Syncing…" : "↻ Sync Live Data"}
         </button>
       </header>
 
-      {lastSync.length > 0 && (
+      {lastReports.length > 0 && (
         <div className="glass-card-sm" style={{ padding: 12, marginBottom: 12, fontSize: 12 }}>
-          {lastSync.map((r) => (
+          {lastReports.map((r) => (
             <div key={r.provider} style={{ color: r.status === "connected" ? "var(--success)" : "var(--warning)" }}>
               {r.provider}: {r.message}
             </div>

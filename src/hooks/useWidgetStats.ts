@@ -23,12 +23,16 @@ export function useWidgetStats(intervalMs = 30000, provider?: string | null) {
   useEffect(() => {
     refresh();
     const id = setInterval(refresh, intervalMs);
-    const unlisten = listen<boolean>("widget-demo-changed", () => {
+    const unlistenDemo = listen<boolean>("widget-demo-changed", () => {
+      refresh();
+    });
+    const unlistenSync = listen("live-sync-finished", () => {
       refresh();
     });
     return () => {
       clearInterval(id);
-      unlisten.then((fn) => fn());
+      unlistenDemo.then((fn) => fn());
+      unlistenSync.then((fn) => fn());
     };
   }, [refresh, intervalMs]);
 

@@ -4,15 +4,61 @@ use crate::models::DashboardStats;
 use crate::env;
 use crate::models::*;
 use crate::credentials::{
-    get_aws_credentials_status, get_openai_credentials_status, update_aws_credentials,
-    update_openai_credentials,
+    get_aws_credentials_status, get_azure_credentials_status, get_openai_credentials_status,
+    update_aws_credentials, update_azure_credentials, update_openai_credentials,
 };
-use crate::sync::{apply_env_keys, sync_all_providers};
+use crate::sync::{refresh_live_data_inner, sync_all_providers};
 use chrono::{Duration, Utc};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, LogicalPosition, Manager, State, WebviewUrl, WebviewWindowBuilder};
 
-const WIDGET_PROVIDERS: &[(&str, &str)] = &[("OpenAI", "openai"), ("AWS Bedrock", "aws-bedrock")];
+const WIDGET_PROVIDERS: &[(&str, &str)] = &[
+    ("OpenAI", "openai"),
+    ("AWS Bedrock", "aws-bedrock"),
+    ("Azure OpenAI", "azure-openai"),
+];
+
+pub struct WindowLayoutState {
+    pub providers_before_expand: Mutex<Vec<String>>,
+    pub main_expanded: Mutex<bool>,
+}
+
+impl WindowLayoutState {
+    pub fn new() -> Self {
+        Self {
+            providers_before_expand: Mutex::new(Vec::new()),
+            main_expanded: Mutex::new(false),
+        }
+    }
+}
+
+pub fn emit_view_state_changed(app: &AppHandle) {
+    let _ = app.emit("view-state-changed", ());
+}
+
+fn set_main_expanded(app: &AppHandle, expanded: bool) {
+    if let Some(state) = app.try_state::<WindowLayoutState>() {
+        *state.main_expanded.lock().unwrap() = expanded;
+    }
+}
+
+pub fn expand_main_dashboard(app: &AppHandle) -> Result<(), String> {
+    prepare_dashboard_expand(app)?;
+    set_main_expanded(app, true);
+
+    let Some(main) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+
+    main
+        .set_always_on_top(false)
+        .map_err(|e| e.to_string())?;
+    apply_window_mode(&main, "expanded")?;
+    main.show().map_err(|e| e.to_string())?;
+    main.set_focus().map_err(|e| e.to_string())?;
+    emit_view_state_changed(app);
+    Ok(())
+}
 
 pub fn provider_to_slug(provider: &str) -> Result<&'static str, String> {
     WIDGET_PROVIDERS
@@ -33,17 +79,83 @@ pub fn widget_label_for_provider(provider: &str) -> Result<String, String> {
     Ok(format!("widget-{}", provider_to_slug(provider)?))
 }
 
-pub fn open_provider_widget_inner(app: &AppHandle, provider: &str) -> Result<(), String> {
+fn hide_main_widget(app: &AppHandle) {
+    if let Some(main) = app.get_webview_window("main") {
+        set_main_expanded(app, false);
+        let _ = apply_window_mode(&main, "widget");
+        emit_view_state_changed(app);
+        let _ = main.hide();
+    }
+}
+
+fn snapshot_visible_providers(app: &AppHandle) -> Vec<String> {
+    let mut visible = Vec::new();
+    for (provider, slug) in WIDGET_PROVIDERS {
+        let label = format!("widget-{slug}");
+        if let Some(window) = app.get_webview_window(&label) {
+            if window.is_visible().unwrap_or(false) {
+                visible.push(provider.to_string());
+            }
+        }
+    }
+    visible
+}
+
+fn hide_provider_widgets(app: &AppHandle) {
+    for (_, slug) in WIDGET_PROVIDERS {
+        let label = format!("widget-{slug}");
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.hide();
+        }
+    }
+}
+
+fn restore_provider_widgets(app: &AppHandle) {
+    let providers = app
+        .try_state::<WindowLayoutState>()
+        .map(|state| {
+            let mut guard = state.providers_before_expand.lock().unwrap();
+            std::mem::take(&mut *guard)
+        })
+        .unwrap_or_default();
+
+    for provider in providers {
+        let _ = show_provider_widget(app, &provider, false);
+    }
+}
+
+fn apply_provider_widget_mode(window: &tauri::WebviewWindow, slug: &str) -> Result<(), String> {
+    window
+        .set_resizable(false)
+        .map_err(|e| e.to_string())?;
+    window
+        .set_min_size(None::<tauri::LogicalSize<f64>>)
+        .map_err(|e| e.to_string())?;
+    window
+        .set_size(tauri::LogicalSize::new(320.0, 220.0))
+        .map_err(|e| e.to_string())?;
+    let (x, y) = widget_position(slug);
+    window
+        .set_position(LogicalPosition::new(x, y))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn show_provider_widget(app: &AppHandle, provider: &str, hide_main: bool) -> Result<(), String> {
     let slug = provider_to_slug(provider)?;
     let label = format!("widget-{slug}");
 
     if let Some(window) = app.get_webview_window(&label) {
-        apply_window_mode(&window, "widget")?;
+        apply_provider_widget_mode(&window, slug)?;
+        window.show().map_err(|e| e.to_string())?;
+        if hide_main {
+            hide_main_widget(app);
+        }
         return Ok(());
     }
 
     let (x, y) = widget_position(slug);
-    WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+    let window = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
         .title(&format!("TokenPulse — {provider}"))
         .inner_size(320.0, 220.0)
         .resizable(false)
@@ -52,17 +164,75 @@ pub fn open_provider_widget_inner(app: &AppHandle, provider: &str) -> Result<(),
         .always_on_top(true)
         .skip_taskbar(true)
         .accept_first_mouse(true)
+        .visible(true)
         .position(x, y)
         .build()
         .map_err(|e| e.to_string())?;
 
+    if hide_main {
+        let _ = window.set_focus();
+        hide_main_widget(app);
+    }
+
     Ok(())
+}
+
+pub fn prepare_dashboard_expand(app: &AppHandle) -> Result<(), String> {
+    let visible = snapshot_visible_providers(app);
+    if let Some(state) = app.try_state::<WindowLayoutState>() {
+        *state.providers_before_expand.lock().unwrap() = visible;
+    }
+    hide_provider_widgets(app);
+    Ok(())
+}
+
+pub fn ensure_provider_widget_window(
+    app: &AppHandle,
+    provider: &str,
+    show: bool,
+) -> Result<(), String> {
+    if show {
+        show_provider_widget(app, provider, true)
+    } else {
+        let slug = provider_to_slug(provider)?;
+        let label = format!("widget-{slug}");
+        if app.get_webview_window(&label).is_some() {
+            return Ok(());
+        }
+
+        let (x, y) = widget_position(slug);
+        WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
+            .title(&format!("TokenPulse — {provider}"))
+            .inner_size(320.0, 220.0)
+            .resizable(false)
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .accept_first_mouse(true)
+            .visible(false)
+            .position(x, y)
+            .build()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
+
+pub fn prewarm_provider_widgets(app: &AppHandle) {
+    for (provider, _) in WIDGET_PROVIDERS {
+        let _ = ensure_provider_widget_window(app, provider, false);
+    }
+}
+
+pub fn open_provider_widget_inner(app: &AppHandle, provider: &str) -> Result<(), String> {
+    ensure_provider_widget_window(app, provider, true)
 }
 
 fn widget_position(slug: &str) -> (f64, f64) {
     match slug {
         "openai" => (72.0, 110.0),
         "aws-bedrock" => (408.0, 110.0),
+        "azure-openai" => (744.0, 110.0),
         _ => (240.0, 110.0),
     }
 }
@@ -77,7 +247,6 @@ pub fn get_widget_stats(
     provider: Option<String>,
 ) -> Result<WidgetStats, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    let _ = AlertEngine::evaluate(&db);
     CostEngine::build_widget_stats_for_provider(&db, provider.as_deref())
         .map_err(|e| e.to_string())
 }
@@ -203,23 +372,37 @@ pub fn mark_alert_read(state: State<AppState>, id: i64) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn detect_env_keys(state: State<AppState>) -> Result<EnvDetection, String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
-    let applied = apply_env_keys(&db)?;
+pub fn detect_env_keys(deep: Option<bool>) -> Result<EnvDetection, String> {
+    let deep = deep.unwrap_or(false);
     Ok(EnvDetection {
         openai_api_key: env::get_openai_api_key().is_some(),
         openai_admin_key: env::get_openai_admin_key().is_some(),
         openai_org_id: env::get_openai_org_id().is_some(),
         openai_billing_token: env::get_openai_billing_token().is_some(),
-        openai_api_probe: env::probe_var("OPENAI_API_KEY"),
-        openai_admin_probe: env::probe_var("OPENAI_ADMIN_KEY"),
+        openai_api_probe: if deep {
+            env::probe_var("OPENAI_API_KEY")
+        } else {
+            env::probe_var_fast("OPENAI_API_KEY")
+        },
+        openai_admin_probe: if deep {
+            env::probe_var("OPENAI_ADMIN_KEY")
+        } else {
+            env::probe_var_fast("OPENAI_ADMIN_KEY")
+        },
         aws_access_key_id: crate::aws_config::get_access_key_id().is_some(),
         aws_secret_access_key: crate::aws_config::get_secret_access_key().is_some(),
         aws_region: crate::aws_config::get_region().is_some(),
         aws_profile: crate::aws_config::get_profile_name().is_some(),
         aws_cli_configured: crate::aws_config::credentials_file_exists(),
         aws_cli_available: crate::aws_config::aws_cli_available(),
-        applied_keys: applied,
+        azure_openai_api_key: crate::azure_config::get_api_key().is_some(),
+        azure_openai_endpoint: crate::azure_config::get_endpoint().is_some(),
+        azure_openai_api_version: crate::azure_config::get_api_version().is_some(),
+        azure_openai_deployment: crate::azure_config::get_deployment_name().is_some(),
+        azure_subscription_id: crate::azure_config::get_subscription_id().is_some(),
+        azure_resource_group: crate::azure_config::get_resource_group().is_some(),
+        azure_cli_available: crate::azure_config::az_cli_available(),
+        applied_keys: Vec::new(),
     })
 }
 
@@ -274,10 +457,64 @@ pub fn update_aws_credentials_cmd(
 #[tauri::command]
 pub fn refresh_live_data(state: State<AppState>) -> Result<Vec<SyncReport>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
-    apply_env_keys(&db)?;
-    let reports = sync_all_providers(&db)?;
-    let _ = AlertEngine::evaluate(&db);
-    Ok(reports)
+    refresh_live_data_inner(&db)
+}
+
+#[tauri::command]
+pub fn start_refresh_live_data(app: AppHandle) -> Result<(), String> {
+    std::thread::spawn(move || {
+        let payload = match app.try_state::<AppState>() {
+            Some(state) => match state.db.lock() {
+                Ok(db) => match refresh_live_data_inner(&db) {
+                    Ok(reports) => LiveSyncFinished {
+                        ok: true,
+                        reports,
+                        error: None,
+                    },
+                    Err(err) => LiveSyncFinished {
+                        ok: false,
+                        reports: Vec::new(),
+                        error: Some(err),
+                    },
+                },
+                Err(e) => LiveSyncFinished {
+                    ok: false,
+                    reports: Vec::new(),
+                    error: Some(e.to_string()),
+                },
+            },
+            None => LiveSyncFinished {
+                ok: false,
+                reports: Vec::new(),
+                error: Some("App database not ready".into()),
+            },
+        };
+        let _ = app.emit("live-sync-finished", payload);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_azure_credentials(state: State<AppState>) -> Result<AzureCredentialsStatus, String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    get_azure_credentials_status(&db)
+}
+
+#[tauri::command]
+pub fn update_azure_credentials_cmd(
+    state: State<AppState>,
+    payload: UpdateAzureCredentialsPayload,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(|e| e.to_string())?;
+    update_azure_credentials(
+        &db,
+        payload.api_key.as_deref(),
+        payload.endpoint.as_deref(),
+        payload.api_version.as_deref(),
+        payload.deployment_name.as_deref(),
+        payload.subscription_id.as_deref(),
+        payload.resource_group.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -292,10 +529,33 @@ pub fn open_provider_widget(app: AppHandle, provider: String) -> Result<(), Stri
 
 #[tauri::command]
 pub fn open_main_dashboard(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("main") {
-        apply_window_mode(&window, "expanded")?;
-        window.emit("navigate", "dashboard").map_err(|e| e.to_string())?;
-    }
+    expand_main_dashboard(&app)
+}
+
+#[tauri::command]
+pub fn get_main_view_expanded(app: AppHandle) -> Result<bool, String> {
+    Ok(app
+        .try_state::<WindowLayoutState>()
+        .map(|state| *state.main_expanded.lock().unwrap())
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+pub fn prepare_dashboard_expand_cmd(app: AppHandle) -> Result<(), String> {
+    prepare_dashboard_expand(&app)
+}
+
+#[tauri::command]
+pub fn collapse_to_widgets(app: AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    set_main_expanded(&app, false);
+    window
+        .set_always_on_top(true)
+        .map_err(|e| e.to_string())?;
+    apply_window_mode(&window, "widget")?;
+    window.show().map_err(|e| e.to_string())?;
+    window.set_focus().map_err(|e| e.to_string())?;
+    restore_provider_widgets(&app);
+    emit_view_state_changed(&app);
     Ok(())
 }
 
@@ -348,6 +608,11 @@ pub fn apply_window_mode(window: &tauri::WebviewWindow, mode: &str) -> Result<()
     }
 
     center_on_screen(window)?;
+    Ok(())
+}
+
+pub fn show_window_mode(window: &tauri::WebviewWindow, mode: &str) -> Result<(), String> {
+    apply_window_mode(window, mode)?;
     window.show().map_err(|e| e.to_string())?;
     window.set_focus().map_err(|e| e.to_string())?;
     Ok(())

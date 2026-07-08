@@ -1,33 +1,36 @@
 import { motion } from "framer-motion";
 import { useCallback, useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { api, formatCost, formatTokens, PROVIDER_COLORS } from "../lib/api";
+import { useLiveSync } from "../hooks/useLiveSync";
 import { ProviderBadge } from "../components/ProviderBadge";
 import type { DashboardData } from "../types";
 import { ProgressRing } from "../components/ProgressRing";
 
 export function DashboardPage() {
   const [data, setData] = useState<DashboardData | null>(null);
-  const [syncing, setSyncing] = useState(false);
 
   const load = useCallback(async () => {
     const stats = await api.getDashboardStats();
     setData(stats);
   }, []);
 
+  const { syncing, startSync } = useLiveSync(load);
+
   useEffect(() => {
     load().catch(console.error);
     const id = setInterval(() => load().catch(console.error), 30000);
-    return () => clearInterval(id);
+    const unlisten = listen("live-sync-finished", () => {
+      load().catch(console.error);
+    });
+    return () => {
+      clearInterval(id);
+      unlisten.then((fn) => fn());
+    };
   }, [load]);
 
-  const sync = async () => {
-    setSyncing(true);
-    try {
-      await api.refreshLiveData();
-      await load();
-    } finally {
-      setSyncing(false);
-    }
+  const sync = () => {
+    void startSync();
   };
 
   if (!data) return <PageLoader />;
@@ -60,12 +63,14 @@ export function DashboardPage() {
           </div>
           <p style={{ fontSize: 13, color: "var(--text-secondary)" }}>{subtitle}</p>
         </div>
-        <button onClick={sync} disabled={syncing} style={{
-          padding: "10px 16px", borderRadius: 10, fontSize: 12, fontWeight: 600,
-          background: "rgba(108,140,255,0.15)", border: "1px solid rgba(108,140,255,0.25)",
-          color: "var(--accent)", opacity: syncing ? 0.6 : 1, flexShrink: 0,
-        }}>
-          {syncing ? "Syncing…" : "↻ Sync"}
+        <button
+          type="button"
+          onClick={sync}
+          disabled={syncing}
+          className={syncing ? "btn-sync active" : "btn-sync"}
+          style={{ flexShrink: 0 }}
+        >
+          {syncing ? "⟳ Syncing…" : "↻ Sync"}
         </button>
       </header>
 

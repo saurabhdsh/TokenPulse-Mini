@@ -182,6 +182,8 @@ pub fn resolve_aws_credentials(
     )
 }
 
+use std::sync::OnceLock;
+
 const AWS_CLI_CANDIDATES: &[&str] = &[
     "aws",
     "/opt/homebrew/bin/aws",
@@ -233,7 +235,8 @@ pub fn find_aws_cli() -> Option<String> {
 }
 
 pub fn aws_cli_available() -> bool {
-    find_aws_cli().is_some()
+    static CACHE: OnceLock<bool> = OnceLock::new();
+    *CACHE.get_or_init(|| find_aws_cli().is_some())
 }
 
 pub fn build_aws_command(creds: &ResolvedAwsCredentials) -> Result<Command, String> {
@@ -298,6 +301,8 @@ pub fn widget_sync_hint(provider: &str, message: &str) -> String {
     match provider {
         "OpenAI" => crate::adapters::widget_openai_sync_hint(message),
         "AWS Bedrock" => widget_aws_sync_hint(message),
+        "Azure OpenAI" if message.len() > 72 => format!("Azure · {}…", &message[..64]),
+        "Azure OpenAI" => format!("Azure · {message}"),
         _ if message.len() > 72 => format!("{}…", &message[..69]),
         _ => message.to_string(),
     }

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, startTransition } from "react";
+import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { MiniWidget } from "./components/MiniWidget";
@@ -27,35 +28,73 @@ const PAGE_TITLES: Record<Exclude<Page, "widget">, string> = {
 };
 
 function App() {
+  const windowLabel = getCurrentWindow().label;
+  const isMainWindow = windowLabel === "main";
+  const providerFilter = providerFromWindowLabel(windowLabel);
   const [mode, setMode] = useState<ViewMode>("widget");
   const [page, setPage] = useState<Page>("widget");
   const [pinned, setPinned] = useState(true);
-  const [providerFilter, setProviderFilter] = useState<string | null>(null);
-  const [isMainWindow, setIsMainWindow] = useState(true);
 
-  const expand = useCallback(async () => {
-    if (providerFilter) {
-      await api.openMainDashboard();
-      return;
+  const [visited, setVisited] = useState<Set<Page>>(() => new Set(["dashboard"]));
+
+  useEffect(() => {
+    if (page !== "widget") {
+      setVisited((prev) => {
+        if (prev.has(page)) return prev;
+        const next = new Set(prev);
+        next.add(page);
+        return next;
+      });
     }
+  }, [page]);
+
+  const navigate = useCallback((next: Page) => {
+    startTransition(() => setPage(next));
+  }, []);
+
+  const applyExpandedView = useCallback(() => {
     setMode("expanded");
     setPage("dashboard");
     setPinned(false);
-    await api.setAlwaysOnTop(false);
-    await api.setWindowMode("expanded");
-    await getCurrentWindow().show();
-    await getCurrentWindow().setFocus();
-  }, [providerFilter]);
+    setVisited((prev) => {
+      const next = new Set(prev);
+      next.add("dashboard");
+      next.add("api-keys");
+      return next;
+    });
+  }, []);
 
-  const collapse = useCallback(async () => {
+  const applyWidgetView = useCallback(() => {
     setMode("widget");
     setPage("widget");
     setPinned(true);
-    await api.setAlwaysOnTop(true);
-    await api.setWindowMode("widget");
-    await getCurrentWindow().show();
-    await getCurrentWindow().setFocus();
   }, []);
+
+  const syncMainViewState = useCallback(async () => {
+    const expanded = await api.getMainViewExpanded();
+    if (expanded) {
+      flushSync(() => applyExpandedView());
+    } else {
+      flushSync(() => applyWidgetView());
+    }
+  }, [applyExpandedView, applyWidgetView]);
+
+  const expand = useCallback(async () => {
+    await api.openMainDashboard();
+    if (getCurrentWindow().label === "main") {
+      await syncMainViewState();
+    }
+  }, [syncMainViewState]);
+
+  const collapse = useCallback(async () => {
+    flushSync(() => applyWidgetView());
+    await api.collapseToWidgets();
+  }, [applyWidgetView]);
+
+  const hideExpanded = useCallback(async () => {
+    await collapse();
+    await getCurrentWindow().hide();
+  }, [collapse]);
 
   const togglePin = useCallback(async () => {
     const next = !pinned;
@@ -68,31 +107,24 @@ function App() {
   }, []);
 
   useEffect(() => {
-    (async () => {
-      const label = getCurrentWindow().label;
-      const provider = providerFromWindowLabel(label);
-      setProviderFilter(provider);
-      setIsMainWindow(label === "main");
-      await api.setAlwaysOnTop(true);
-      await api.setWindowMode("widget");
-      if (label === "main") {
-        api.refreshLiveData().catch(console.error);
-      }
-    })();
-  }, []);
+    if (!isMainWindow) {
+      void api.setAlwaysOnTop(true);
+      return;
+    }
+    void syncMainViewState();
+  }, [isMainWindow, syncMainViewState]);
 
   useEffect(() => {
-    const unlisten = listen<string>("navigate", async (event) => {
-      if (event.payload === "dashboard") {
-        setMode("expanded");
-        setPage("dashboard");
-        setPinned(false);
-        await api.setAlwaysOnTop(false);
-        await api.setWindowMode("expanded");
-      }
+    if (!isMainWindow) return;
+
+    const unlisten = listen("view-state-changed", () => {
+      void syncMainViewState();
     });
-    return () => { unlisten.then((fn) => fn()); };
-  }, []);
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [isMainWindow, syncMainViewState]);
 
   if (mode === "widget") {
     return (
@@ -112,7 +144,7 @@ function App() {
     return null;
   }
 
-  const pageTitle = page === "widget" ? "Dashboard" : PAGE_TITLES[page];
+  const pageTitle = PAGE_TITLES[page as Exclude<Page, "widget">];
 
   return (
     <div className="expanded-shell">
@@ -122,17 +154,46 @@ function App() {
         pinned={pinned}
         onTogglePin={togglePin}
         onCollapse={collapse}
+        onHide={hideExpanded}
       />
       <div className="expanded-body">
-        <Sidebar current={page} onNavigate={setPage} />
+        <Sidebar current={page} onNavigate={navigate} />
         <main className="expanded-main">
-          {page === "dashboard" && <DashboardPage />}
-          {page === "providers" && <ProviderBreakdownPage />}
-          {page === "models" && <ModelBreakdownPage />}
-          {page === "budget" && <BudgetSettingsPage />}
-          {page === "api-keys" && <ApiKeySettingsPage />}
-          {page === "pricing" && <ModelPricingPage />}
-          {page === "history" && <UsageHistoryPage />}
+          {visited.has("dashboard") && (
+            <div style={{ display: page === "dashboard" ? "block" : "none", height: "100%" }}>
+              <DashboardPage />
+            </div>
+          )}
+          {visited.has("providers") && (
+            <div style={{ display: page === "providers" ? "block" : "none", height: "100%" }}>
+              <ProviderBreakdownPage />
+            </div>
+          )}
+          {visited.has("models") && (
+            <div style={{ display: page === "models" ? "block" : "none", height: "100%" }}>
+              <ModelBreakdownPage />
+            </div>
+          )}
+          {visited.has("budget") && (
+            <div style={{ display: page === "budget" ? "block" : "none", height: "100%" }}>
+              <BudgetSettingsPage />
+            </div>
+          )}
+          {visited.has("api-keys") && (
+            <div style={{ display: page === "api-keys" ? "block" : "none", height: "100%" }}>
+              <ApiKeySettingsPage />
+            </div>
+          )}
+          {visited.has("pricing") && (
+            <div style={{ display: page === "pricing" ? "block" : "none", height: "100%" }}>
+              <ModelPricingPage />
+            </div>
+          )}
+          {visited.has("history") && (
+            <div style={{ display: page === "history" ? "block" : "none", height: "100%" }}>
+              <UsageHistoryPage />
+            </div>
+          )}
         </main>
       </div>
     </div>

@@ -210,6 +210,13 @@ pub struct SyncReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiveSyncFinished {
+    pub ok: bool,
+    pub reports: Vec<SyncReport>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnvDetection {
     pub openai_api_key: bool,
     pub openai_admin_key: bool,
@@ -223,6 +230,13 @@ pub struct EnvDetection {
     pub aws_profile: bool,
     pub aws_cli_configured: bool,
     pub aws_cli_available: bool,
+    pub azure_openai_api_key: bool,
+    pub azure_openai_endpoint: bool,
+    pub azure_openai_api_version: bool,
+    pub azure_openai_deployment: bool,
+    pub azure_subscription_id: bool,
+    pub azure_resource_group: bool,
+    pub azure_cli_available: bool,
     pub applied_keys: Vec<String>,
 }
 
@@ -282,6 +296,41 @@ pub struct UpdateAwsCredentialsPayload {
     pub session_token: Option<String>,
     pub region: Option<String>,
     pub profile: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AzureCredentialsStatus {
+    pub api_key: CredentialFieldStatus,
+    pub endpoint: CredentialFieldStatus,
+    pub api_version: CredentialFieldStatus,
+    pub deployment_name: CredentialFieldStatus,
+    pub subscription_id: CredentialFieldStatus,
+    pub resource_group: CredentialFieldStatus,
+    pub azure_cli_available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateAzureCredentialsPayload {
+    pub api_key: Option<String>,
+    pub endpoint: Option<String>,
+    pub api_version: Option<String>,
+    pub deployment_name: Option<String>,
+    pub subscription_id: Option<String>,
+    pub resource_group: Option<String>,
+}
+
+impl Default for UpdateAzureCredentialsPayload {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            endpoint: None,
+            api_version: None,
+            deployment_name: None,
+            subscription_id: None,
+            resource_group: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

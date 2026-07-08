@@ -16,6 +16,8 @@ import type {
   UpdateOpenAICredentialsPayload,
   AwsCredentialsStatus,
   UpdateAwsCredentialsPayload,
+  AzureCredentialsStatus,
+  UpdateAzureCredentialsPayload,
 } from "../types";
 
 export type {
@@ -26,6 +28,8 @@ export type {
   UpdateOpenAICredentialsPayload,
   AwsCredentialsStatus,
   UpdateAwsCredentialsPayload,
+  AzureCredentialsStatus,
+  UpdateAzureCredentialsPayload,
 };
 
 export const api = {
@@ -59,7 +63,8 @@ export const api = {
   markAlertRead: (id: number) => invoke<void>("mark_alert_read", { id }),
   syncProviderUsage: () => invoke<SyncReport[]>("sync_provider_usage"),
   refreshLiveData: () => invoke<SyncReport[]>("refresh_live_data"),
-  detectEnvKeys: () => invoke<EnvDetection>("detect_env_keys"),
+  startRefreshLiveData: () => invoke<void>("start_refresh_live_data"),
+  detectEnvKeys: (deep?: boolean) => invoke<EnvDetection>("detect_env_keys", { deep: deep ?? false }),
   getOpenAICredentials: () => invoke<OpenAICredentialsStatus>("get_openai_credentials"),
   updateOpenAICredentials: (payload: UpdateOpenAICredentialsPayload) =>
     invoke<void>("update_openai_credentials_cmd", {
@@ -72,9 +77,15 @@ export const api = {
   getAwsCredentials: () => invoke<AwsCredentialsStatus>("get_aws_credentials"),
   updateAwsCredentials: (payload: UpdateAwsCredentialsPayload) =>
     invoke<void>("update_aws_credentials_cmd", { payload }),
+  getAzureCredentials: () => invoke<AzureCredentialsStatus>("get_azure_credentials"),
+  updateAzureCredentials: (payload: UpdateAzureCredentialsPayload) =>
+    invoke<void>("update_azure_credentials_cmd", { payload }),
   openProviderWidget: (provider: string) =>
     invoke<void>("open_provider_widget", { provider }),
   openMainDashboard: () => invoke<void>("open_main_dashboard"),
+  getMainViewExpanded: () => invoke<boolean>("get_main_view_expanded"),
+  prepareDashboardExpand: () => invoke<void>("prepare_dashboard_expand_cmd"),
+  collapseToWidgets: () => invoke<void>("collapse_to_widgets"),
   listWidgetProviders: () => invoke<string[]>("list_widget_providers"),
   setAlwaysOnTop: (pinned: boolean) =>
     invoke<void>("set_always_on_top", { pinned }),

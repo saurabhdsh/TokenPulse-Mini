@@ -418,6 +418,10 @@ impl Database {
         self.get_provider_pricing_map("AWS Bedrock")
     }
 
+    pub fn get_azure_pricing_map(&self) -> Result<std::collections::HashMap<String, (f64, f64)>> {
+        self.get_provider_pricing_map("Azure OpenAI")
+    }
+
     fn get_provider_pricing_map(
         &self,
         provider_name: &str,
@@ -979,6 +983,8 @@ impl Database {
         }
     }
 
+    /// Local calendar midnight as UTC RFC3339 (`…Z`) so SQLite `timestamp >= ?` compares correctly
+    /// against usage events stored in UTC (mixed `+05:30` / `+00:00` strings sort lexicographically wrong).
     pub fn get_today_start(&self) -> String {
         Local::now()
             .date_naive()
@@ -986,7 +992,8 @@ impl Database {
             .unwrap()
             .and_local_timezone(Local)
             .unwrap()
-            .to_rfc3339()
+            .with_timezone(&Utc)
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     }
 
     pub fn get_provider_costs_since(&self, since: &str) -> Result<Vec<ProviderCost>> {

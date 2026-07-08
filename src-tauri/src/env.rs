@@ -106,9 +106,26 @@ pub struct EnvVarProbe {
 }
 
 pub fn probe_var(name: &str) -> EnvVarProbe {
+    probe_var_sources(name, true)
+}
+
+/// Fast probe — process environment only (no shell / launchctl subprocesses).
+pub fn probe_var_fast(name: &str) -> EnvVarProbe {
+    probe_var_sources(name, false)
+}
+
+fn probe_var_sources(name: &str, deep: bool) -> EnvVarProbe {
     let process_val = std::env::var(name).ok().filter(|v| !v.trim().is_empty());
-    let launchctl_val = launchctl_getenv_raw(name);
-    let shell_val = shell_getenv_raw(name);
+    let launchctl_val = if deep {
+        launchctl_getenv_raw(name)
+    } else {
+        None
+    };
+    let shell_val = if deep {
+        shell_getenv_raw(name)
+    } else {
+        None
+    };
 
     let key_type = process_val
         .as_deref()

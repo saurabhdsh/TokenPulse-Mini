@@ -1,8 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { api, PROVIDER_COLORS } from "../lib/api";
+import { useLiveSync } from "../hooks/useLiveSync";
 import { ProviderBadge } from "../components/ProviderBadge";
 import type {
   AwsCredentialsStatus,
+  AzureCredentialsStatus,
   CredentialFieldStatus,
   EnvDetection,
   OpenAICredentialsStatus,
@@ -11,12 +13,14 @@ import type {
 
 type OpenAIField = "api_key" | "admin_key" | "billing_token" | "org_id";
 type AwsField = "access_key_id" | "secret_access_key" | "session_token" | "region" | "profile";
+type AzureField = "api_key" | "endpoint" | "api_version" | "deployment_name" | "subscription_id" | "resource_group";
 
-const LIVE_PROVIDERS = new Set(["OpenAI", "AWS Bedrock"]);
+const LIVE_PROVIDERS = new Set(["OpenAI", "AWS Bedrock", "Azure OpenAI"]);
 
 function providerStatusLabel(provider: Provider): string {
   if (provider.sync_status === "connected") {
     if (provider.name === "AWS Bedrock") return "Live · synced from AWS Cost Explorer";
+    if (provider.name === "Azure OpenAI") return "Live · synced from Azure OpenAI / Monitor";
     return "Live · synced from OpenAI API";
   }
   if (provider.sync_status === "error") return provider.sync_message ?? "Sync error";
@@ -27,6 +31,9 @@ function providerStatusLabel(provider: Provider): string {
   }
   if (provider.name === "AWS Bedrock" && provider.is_enabled) {
     return "Configure AWS credentials below or run `aws configure`";
+  }
+  if (provider.name === "Azure OpenAI" && provider.is_enabled) {
+    return "Configure Azure endpoint + API key below, or set AZURE_OPENAI_* env vars";
   }
   if (provider.is_enabled) return "No credentials configured";
   return "Disabled";
@@ -44,6 +51,7 @@ export function ApiKeySettingsPage() {
   const [env, setEnv] = useState<EnvDetection | null>(null);
   const [openaiCreds, setOpenaiCreds] = useState<OpenAICredentialsStatus | null>(null);
   const [awsCreds, setAwsCreds] = useState<AwsCredentialsStatus | null>(null);
+  const [azureCreds, setAzureCreds] = useState<AzureCredentialsStatus | null>(null);
   const [openaiDrafts, setOpenaiDrafts] = useState<Record<OpenAIField, string>>({
     api_key: "",
     admin_key: "",
@@ -57,22 +65,32 @@ export function ApiKeySettingsPage() {
     region: "",
     profile: "",
   });
+  const [azureDrafts, setAzureDrafts] = useState<Record<AzureField, string>>({
+    api_key: "",
+    endpoint: "",
+    api_version: "",
+    deployment_name: "",
+    subscription_id: "",
+    resource_group: "",
+  });
   const [savedOpenAI, setSavedOpenAI] = useState<OpenAIField | null>(null);
   const [savedAws, setSavedAws] = useState<AwsField | null>(null);
-  const [syncing, setSyncing] = useState(false);
+  const [savedAzure, setSavedAzure] = useState<AzureField | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [envLoading, setEnvLoading] = useState(true);
 
-  const load = async () => {
-    const [detected, providerList, openai, aws] = await Promise.all([
-      api.detectEnvKeys(),
+  const loadCore = async () => {
+    const [providerList, openai, aws, azure] = await Promise.all([
       api.getProviders(),
       api.getOpenAICredentials(),
       api.getAwsCredentials(),
+      api.getAzureCredentials(),
     ]);
-    setEnv(detected);
     setProviders(providerList);
     setOpenaiCreds(openai);
     setAwsCreds(aws);
+    setAzureCreds(azure);
     setOpenaiDrafts({ api_key: "", admin_key: "", billing_token: "", org_id: "" });
     setAwsDrafts({
       access_key_id: "",
@@ -81,7 +99,33 @@ export function ApiKeySettingsPage() {
       region: "",
       profile: "",
     });
+    setAzureDrafts({
+      api_key: "",
+      endpoint: "",
+      api_version: "",
+      deployment_name: "",
+      subscription_id: "",
+      resource_group: "",
+    });
+    setLoading(false);
   };
+
+  const loadEnvProbe = async (deep = false) => {
+    setEnvLoading(true);
+    try {
+      const detected = await api.detectEnvKeys(deep);
+      setEnv(detected);
+    } finally {
+      setEnvLoading(false);
+    }
+  };
+
+  const load = async () => {
+    await loadCore();
+    void loadEnvProbe(false);
+  };
+
+  const { syncing, startSync } = useLiveSync(load);
 
   useEffect(() => {
     load().catch(console.error);
@@ -100,8 +144,7 @@ export function ApiKeySettingsPage() {
       if (field === "admin_key" && !creds.active_admin.configured) {
         throw new Error("Admin key did not persist. Please try saving again.");
       }
-      await api.refreshLiveData().catch(console.error);
-      await load();
+      void startSync();
     } catch (e) {
       setSaveError(String(e));
     }
@@ -120,13 +163,28 @@ export function ApiKeySettingsPage() {
     setSavedAws(field);
     setTimeout(() => setSavedAws(null), 2000);
     await load();
-    await api.refreshLiveData().catch(console.error);
-    await load();
+    void startSync();
   };
 
   const clearAws = async (field: AwsField) => {
     await api.updateAwsCredentials({ [field]: "" });
     setAwsDrafts((d) => ({ ...d, [field]: "" }));
+    await load();
+  };
+
+  const saveAzure = async (field: AzureField) => {
+    const value = azureDrafts[field];
+    if (!value.trim()) return;
+    await api.updateAzureCredentials({ [field]: value.trim() });
+    setSavedAzure(field);
+    setTimeout(() => setSavedAzure(null), 2000);
+    await load();
+    void startSync();
+  };
+
+  const clearAzure = async (field: AzureField) => {
+    await api.updateAzureCredentials({ [field]: "" });
+    setAzureDrafts((d) => ({ ...d, [field]: "" }));
     await load();
   };
 
@@ -141,18 +199,13 @@ export function ApiKeySettingsPage() {
     await load();
   };
 
-  const syncNow = async () => {
-    setSyncing(true);
-    try {
-      await api.refreshLiveData();
-      await load();
-    } finally {
-      setSyncing(false);
-    }
+  const syncNow = () => {
+    void startSync();
   };
 
   const openai = providers.find((p) => p.name === "OpenAI");
   const bedrock = providers.find((p) => p.name === "AWS Bedrock");
+  const azure = providers.find((p) => p.name === "Azure OpenAI");
   const mockProviders = providers.filter((p) => !LIVE_PROVIDERS.has(p.name));
 
   return (
@@ -161,17 +214,22 @@ export function ApiKeySettingsPage() {
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700 }}>API Key Settings</h1>
           <p style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4 }}>
-            Save credentials in the app, or use macOS env vars / AWS CLI config
+            Save credentials in the app, or use macOS env vars / AWS CLI / Azure CLI
           </p>
         </div>
-        <button onClick={syncNow} disabled={syncing} style={{
-          padding: "10px 16px", borderRadius: 10, fontSize: 12, fontWeight: 600, alignSelf: "flex-start",
-          background: "rgba(108,140,255,0.15)", border: "1px solid rgba(108,140,255,0.25)",
-          color: "var(--accent)", opacity: syncing ? 0.6 : 1,
-        }}>
-          {syncing ? "Syncing…" : "↻ Sync Live Data"}
+        <button
+          type="button"
+          onClick={syncNow}
+          disabled={syncing}
+          className={syncing ? "btn-sync active" : "btn-sync"}
+        >
+          {syncing ? "⟳ Syncing…" : "↻ Sync Live Data"}
         </button>
       </header>
+
+      {loading && (
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 16 }}>Loading credentials…</div>
+      )}
 
       {saveError && (
         <div style={{
@@ -262,12 +320,41 @@ export function ApiKeySettingsPage() {
         </ProviderCredentialCard>
       )}
 
-      {env && (
+      {azureCreds && azure && (
+        <ProviderCredentialCard
+          provider={azure}
+          title="Azure OpenAI"
+          onToggle={() => toggle("Azure OpenAI")}
+          onOpenWidget={() => api.openProviderWidget("Azure OpenAI")}
+          extra={(
+            <div style={{ marginBottom: 12, fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
+              Enterprise teams often route OpenAI models through Azure AI Foundry.
+              {" "}
+              {azureCreds.azure_cli_available
+                ? "Azure CLI detected — token metrics available with subscription + resource group."
+                : "Install Azure CLI (`brew install azure-cli`) and run `az login` for token metrics."}
+            </div>
+          )}
+        >
+          <CredentialRow field={azureCreds.endpoint} value={azureDrafts.endpoint} onChange={(v) => setAzureDrafts({ ...azureDrafts, endpoint: v })} onSave={() => saveAzure("endpoint")} onClear={() => clearAzure("endpoint")} saved={savedAzure === "endpoint"} required mono={false} password={false} placeholder="https://myresource.openai.azure.com" />
+          <CredentialRow field={azureCreds.api_key} value={azureDrafts.api_key} onChange={(v) => setAzureDrafts({ ...azureDrafts, api_key: v })} onSave={() => saveAzure("api_key")} onClear={() => clearAzure("api_key")} saved={savedAzure === "api_key"} required />
+          <CredentialRow field={azureCreds.api_version} value={azureDrafts.api_version} onChange={(v) => setAzureDrafts({ ...azureDrafts, api_version: v })} onSave={() => saveAzure("api_version")} onClear={() => clearAzure("api_version")} saved={savedAzure === "api_version"} mono={false} password={false} placeholder="2024-10-21" />
+          <CredentialRow field={azureCreds.deployment_name} value={azureDrafts.deployment_name} onChange={(v) => setAzureDrafts({ ...azureDrafts, deployment_name: v })} onSave={() => saveAzure("deployment_name")} onClear={() => clearAzure("deployment_name")} saved={savedAzure === "deployment_name"} mono={false} password={false} />
+          <CredentialRow field={azureCreds.subscription_id} value={azureDrafts.subscription_id} onChange={(v) => setAzureDrafts({ ...azureDrafts, subscription_id: v })} onSave={() => saveAzure("subscription_id")} onClear={() => clearAzure("subscription_id")} saved={savedAzure === "subscription_id"} mono={false} password={false} />
+          <CredentialRow field={azureCreds.resource_group} value={azureDrafts.resource_group} onChange={(v) => setAzureDrafts({ ...azureDrafts, resource_group: v })} onSave={() => saveAzure("resource_group")} onClear={() => clearAzure("resource_group")} saved={savedAzure === "resource_group"} mono={false} password={false} />
+        </ProviderCredentialCard>
+      )}
+
+      {(env || envLoading) && (
         <div className="glass-card-sm" style={{ padding: 14, marginBottom: 16, maxWidth: 720, fontSize: 12 }}>
-          <div className="stat-label" style={{ marginBottom: 8 }}>macOS environment variables only</div>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+            <div className="stat-label">macOS environment variables only</div>
+            {envLoading && <span style={{ fontSize: 10, color: "var(--text-muted)" }}>Scanning…</span>}
+          </div>
           <p style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 8 }}>
             Keys saved in the app above work independently. &quot;Not found&quot; here is normal if you only saved in-app.
           </p>
+          {env && (
           <div style={{ display: "grid", gap: 6 }}>
             <EnvRow label="OPENAI_API_KEY" ok={env.openai_api_key} probe={env.openai_api_probe} />
             <EnvRow
@@ -283,7 +370,15 @@ export function ApiKeySettingsPage() {
             <EnvRow label="AWS_PROFILE" ok={env.aws_profile} />
             <EnvRow label="~/.aws/credentials" ok={env.aws_cli_configured} />
             <EnvRow label="aws CLI" ok={env.aws_cli_available} />
+            <EnvRow label="AZURE_OPENAI_ENDPOINT" ok={env.azure_openai_endpoint} />
+            <EnvRow label="AZURE_OPENAI_API_KEY" ok={env.azure_openai_api_key} />
+            <EnvRow label="AZURE_OPENAI_API_VERSION" ok={env.azure_openai_api_version} />
+            <EnvRow label="AZURE_OPENAI_DEPLOYMENT_NAME" ok={env.azure_openai_deployment} />
+            <EnvRow label="AZURE_SUBSCRIPTION_ID" ok={env.azure_subscription_id} />
+            <EnvRow label="AZURE_OPENAI_RESOURCE_GROUP" ok={env.azure_resource_group} />
+            <EnvRow label="az CLI" ok={env.azure_cli_available} />
           </div>
+          )}
         </div>
       )}
 

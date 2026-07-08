@@ -8,6 +8,13 @@ import { Sparkline } from "./Sparkline";
 
 const PROVIDERS = ["OpenAI", "Anthropic", "AWS Bedrock", "Azure OpenAI", "Gemini"];
 
+function providerLiveLabel(name: string): string {
+  if (name === "OpenAI") return "OPENAI";
+  if (name === "AWS Bedrock") return "AWS";
+  if (name === "Azure OpenAI") return "AZURE";
+  return name.split(" ")[0]?.toUpperCase() ?? name;
+}
+
 interface MiniWidgetProps {
   provider?: string | null;
   pinned: boolean;
@@ -36,9 +43,9 @@ export function MiniWidget({ provider, pinned, onTogglePin, onExpand, onHide }: 
 
   const liveBadge = provider
     ? stats?.show_demo_overlay && stats.live_providers.includes(provider)
-      ? `${provider === "OpenAI" ? "OPENAI" : "AWS"} LIVE+DEMO`
+      ? `${providerLiveLabel(provider)} LIVE+DEMO`
       : stats?.live_providers.includes(provider)
-        ? `${provider === "OpenAI" ? "OPENAI" : "AWS"} LIVE`
+        ? `${providerLiveLabel(provider)} LIVE`
         : stats?.is_demo_data
           ? "DEMO"
           : "OFFLINE"
@@ -68,9 +75,9 @@ export function MiniWidget({ provider, pinned, onTogglePin, onExpand, onHide }: 
   return (
     <motion.div
       className="glass-card"
-      initial={{ opacity: 0, scale: 0.96 }}
+      initial={{ opacity: 1, scale: 1 }}
       animate={{ opacity: 1, scale: 1 }}
-      transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+      transition={{ duration: 0.12 }}
       style={{
         width: 320,
         height: 220,
